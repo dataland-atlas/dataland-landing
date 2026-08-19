@@ -382,12 +382,15 @@ function start() {
   const rand = mulberry32(0xa71a5);
 
   /* ---------------- grow the skeleton ---------------- */
-  const segs = [];            // {ax..bz, r, depth}
+  const segs = [];            // {ax..bz, r, depth} — for particle placement
+  const branches = [];        // polylines — for the solid wood
   const tips = [];
   const MAX_SEGS = 5200;
   function branch(px, py, pz, dx, dy, dz, len, depth) {
     if (segs.length > MAX_SEGS) return;
     const steps = 6;
+    const pts = [[px, py, pz]];
+    const r0 = 0.19 * Math.pow(0.62, depth);
     for (let i = 0; i < steps; i++) {
       dx += (rand() - 0.5) * 0.36;
       dy += (rand() - 0.5) * 0.22 + 0.04;
@@ -396,8 +399,9 @@ function start() {
       const s = len / steps;
       const qx = px + dx * s, qy = py + dy * s, qz = pz + dz * s;
       segs.push({ ax: px, ay: py, az: pz, bx: qx, by: qy, bz: qz,
-                  r: 0.15 * Math.pow(0.62, depth), depth, len: s });
+                  r: r0, depth, len: s });
       px = qx; py = qy; pz = qz;
+      pts.push([px, py, pz]);
       if (depth < 5 && i >= 1 && rand() < 0.5) {
         let cx = dx + (rand() - 0.5) * 1.8;
         let cy = dy + (rand() - 0.35) * 1.15;
@@ -406,6 +410,7 @@ function start() {
         branch(px, py, pz, cx * cl, cy * cl, cz * cl, len * 0.64, depth + 1);
       }
     }
+    branches.push({ pts, r0, depth });
     if (depth >= 2) tips.push([px, py, pz]);
   }
   branch(0, -1.55, 0, 0.06, 1, 0, 1.7, 0);
@@ -438,7 +443,7 @@ function start() {
     } else {
       const sg = pickSeg(rand());
       const t = rand();
-      const spread = sg.r * 2.1 + 0.012;
+      const spread = sg.r * 1.6 + 0.01;
       base[j3]     = sg.ax + (sg.bx - sg.ax) * t + g3() * spread;
       base[j3 + 1] = sg.ay + (sg.by - sg.ay) * t + g3() * spread;
       base[j3 + 2] = sg.az + (sg.bz - sg.az) * t + g3() * spread;
@@ -465,9 +470,12 @@ function start() {
     uColorA:   { value: new THREE.Color("#7a5cff") },
     uColorB:   { value: new THREE.Color("#4fc8e0") },
     uColorHot: { value: new THREE.Color("#f0efff") },
+    uColorMoss: { value: new THREE.Color("#6faf4e") },
+    uColorLeaf: { value: new THREE.Color("#c4e88f") },
   };
 
   const particleMaterial = new THREE.ShaderMaterial({
+    name: "particles",
     uniforms: { ...shared, ...palette },
     transparent: true,
     depthWrite: false,
@@ -475,7 +483,7 @@ function start() {
     vertexShader: /* glsl */`
       attribute vec4 aSeed;
       uniform float uTime, uForm, uPixelRatio, uPointerStrength;
-      uniform vec3 uPointer, uColorA, uColorB, uColorHot;
+      uniform vec3 uPointer, uColorA, uColorB, uColorHot, uColorMoss, uColorLeaf;
       varying vec3 vColor;
       varying float vAlpha;
       ${NOISE_GLSL}
@@ -516,9 +524,9 @@ function start() {
         float fil = smoothstep(0.42, 0.78, w);
         float keep = mix(1.0, 0.08 + 0.92 * fil, kind);
 
-        float key = mix(clamp(tipness * 1.25 - 0.2, 0.0, 1.0) + warp.x * 0.5,
-                        0.5 - aBase.y * 0.4 + warp.x * 1.1, kind);
-        vec3 pig = mix(uColorA, uColorB, clamp(key, 0.0, 1.0));
+        vec3 nature = mix(uColorMoss, uColorLeaf, clamp(tipness * 1.15 - 0.1 + warp.x * 0.4, 0.0, 1.0));
+        vec3 machine = mix(uColorA, uColorB, clamp(0.5 - aBase.y * 0.4 + warp.x * 1.1, 0.0, 1.0));
+        vec3 pig = mix(nature, machine, kind);
         float sparkle = smoothstep(0.78, 0.97, vnoise(aBase * 9.0 + vec3(0.0, 0.0, uTime * 0.6)));
         float hot = mix(smoothstep(0.86, 1.0, tipness) * (0.18 + 0.5 * sparkle),
                         smoothstep(0.80, 0.98, w), kind)
@@ -534,7 +542,6 @@ function start() {
       }
     `,
     fragmentShader: /* glsl */`
-      precision mediump float;
       varying vec3 vColor;
       varying float vAlpha;
       void main() {
@@ -578,6 +585,7 @@ function start() {
   linkGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 14);
 
   const linkMaterial = new THREE.ShaderMaterial({
+    name: "links",
     uniforms: shared,
     transparent: true,
     depthWrite: false,
@@ -595,7 +603,6 @@ function start() {
       }
     `,
     fragmentShader: /* glsl */`
-      precision mediump float;
       uniform float uTime, uForm;
       varying float vT, vPhase, vSpeed, vNear;
       void main() {
@@ -620,6 +627,7 @@ function start() {
   nodeGeometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 14);
 
   const nodeMaterial = new THREE.ShaderMaterial({
+    name: "nodes",
     uniforms: shared,
     transparent: true,
     depthWrite: false,
@@ -639,7 +647,6 @@ function start() {
       }
     `,
     fragmentShader: /* glsl */`
-      precision mediump float;
       varying float vGlow;
       void main() {
         float d = length(gl_PointCoord - 0.5);
@@ -652,9 +659,184 @@ function start() {
   });
   const nodes = new THREE.Points(nodeGeometry, nodeMaterial);
 
+  /* ---------------- the wood: swept tapering tubes over each branch ---------------- */
+  function buildWood() {
+    const pos = [], nor = [], idx = [];
+    const RS = 6;                       // ring segments
+    for (const br of branches) {
+      const n = br.pts.length;
+      const start = pos.length / 3;
+      for (let i = 0; i < n; i++) {
+        const p = br.pts[i];
+        const a = br.pts[Math.max(0, i - 1)], b = br.pts[Math.min(n - 1, i + 1)];
+        let tx = b[0] - a[0], ty = b[1] - a[1], tz = b[2] - a[2];
+        const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+        let ux = -ty, uy = tx, uz = 0;
+        let ul = Math.hypot(ux, uy, uz);
+        if (ul < 0.01) { ux = 1; uy = 0; uz = 0; ul = 1; }
+        ux /= ul; uy /= ul; uz /= ul;
+        const vx = ty * uz - tz * uy, vy = tz * ux - tx * uz, vz = tx * uy - ty * ux;
+        const r = br.r0 * (1 - 0.78 * (i / (n - 1))) * 1.05;
+        for (let k = 0; k < RS; k++) {
+          const ang = (k / RS) * Math.PI * 2;
+          const ca = Math.cos(ang), sa = Math.sin(ang);
+          const nx = ux * ca + vx * sa, ny = uy * ca + vy * sa, nz = uz * ca + vz * sa;
+          pos.push(p[0] + nx * r, p[1] + ny * r, p[2] + nz * r);
+          nor.push(nx, ny, nz);
+        }
+        if (i > 0) {
+          const A = start + (i - 1) * RS, B = start + i * RS;
+          for (let k = 0; k < RS; k++) {
+            const k2 = (k + 1) % RS;
+            idx.push(A + k, B + k, B + k2, A + k, B + k2, A + k2);
+          }
+        }
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute("normal", new THREE.BufferAttribute(new Float32Array(nor), 3));
+    g.setIndex(idx);
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 14);
+    return g;
+  }
+  const woodMaterial = new THREE.ShaderMaterial({
+    name: "wood",
+    uniforms: { ...shared, ...palette },
+    transparent: true,
+    vertexShader: /* glsl */`
+      uniform float uTime, uForm;
+      varying vec3 vN, vP;
+      varying float vH;
+      void main() {
+        vec3 p = position;
+        /* the whole crown sways; the base stands still */
+        float sway = smoothstep(-1.6, 1.3, p.y);
+        p.x += sin(uTime * 0.5 + p.y * 2.1) * 0.035 * sway * uForm;
+        p.z += cos(uTime * 0.4 + p.x * 1.7) * 0.028 * sway * uForm;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vN = normalize(normalMatrix * normal);
+        vP = mv.xyz;
+        vH = position.y;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uColorB, uColorMoss;
+      uniform float uForm;
+      varying vec3 vN, vP;
+      varying float vH;
+      void main() {
+        vec3 V = normalize(-vP);
+        float fres = pow(1.0 - abs(dot(normalize(vN), V)), 2.5);
+        vec3 rim = mix(uColorMoss, uColorB, smoothstep(-1.3, 1.3, vH));
+        vec3 c = vec3(0.014, 0.014, 0.022) + rim * fres * 0.5;
+        float a = uForm * uForm;
+        gl_FragColor = vec4(c * a, a);
+      }
+    `,
+  });
+  const wood = new THREE.Mesh(buildWood(), woodMaterial);
+
+  /* ---------------- moths: two glowing visitors ---------------- */
+  const MOTHS = narrow ? 1 : 2;
+  function makeMothGeometry() {
+    const outline = [                  // one wing silhouette in the xz plane
+      [0.020, -0.050], [0.062, -0.088], [0.132, -0.026],
+      [0.108, 0.048], [0.040, 0.058], [0.008, 0.030],
+    ];
+    const pos = [], side = [], span = [], idx = [];
+    for (const s of [-1, 1]) {
+      const start = pos.length / 3;
+      pos.push(0, 0, 0); side.push(s); span.push(0);
+      for (const [wx, wz] of outline) {
+        pos.push(wx * s, 0, wz); side.push(s); span.push(wx / 0.132);
+      }
+      for (let i = 1; i < outline.length; i++) idx.push(start, start + i, start + i + 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute("aSide", new THREE.BufferAttribute(new Float32Array(side), 1));
+    g.setAttribute("aSpan", new THREE.BufferAttribute(new Float32Array(span), 1));
+    g.setIndex(idx);
+    g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1);
+    return g;
+  }
+  const mothGeometry = makeMothGeometry();
+  function makeMothMaterial(phase) {
+    return new THREE.ShaderMaterial({
+      name: "moth",
+      uniforms: { uTime: shared.uTime, uForm: shared.uForm, uPhase: { value: phase }, ...palette },
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      vertexShader: /* glsl */`
+        attribute float aSide, aSpan;
+        uniform float uTime, uPhase;
+        varying float vSpan, vFlap;
+        void main() {
+          float a = (sin(uTime * 11.0 + uPhase * 6.2832) * 0.95 + 0.2) * aSide;
+          vFlap = abs(sin(uTime * 11.0 + uPhase * 6.2832));
+          vSpan = aSpan;
+          vec3 p = vec3(position.x * cos(a), position.x * sin(a), position.z);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform float uForm;
+        uniform vec3 uColorB, uColorHot;
+        varying float vSpan, vFlap;
+        void main() {
+          vec3 c = mix(uColorHot, uColorB, vSpan * 0.85);
+          float a = (0.85 - vSpan * 0.5) * (0.55 + 0.45 * vFlap) * uForm * uForm;
+          gl_FragColor = vec4(c * a, a);
+        }
+      `,
+    });
+  }
+  const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3();
+  const moths = [];
+  for (let m = 0; m < MOTHS; m++) {
+    const mesh = new THREE.Mesh(mothGeometry, makeMothMaterial(rand()));
+    mesh.scale.setScalar(0.6);
+    const tp = tips[(rand() * tips.length) | 0];
+    moths.push({
+      mesh,
+      pos: new THREE.Vector3(tp[0], tp[1] + 0.3, tp[2] + 0.4),
+      vel: new THREE.Vector3(0.2, 0, 0),
+      anchor: new THREE.Vector3().fromArray(tips[(rand() * tips.length) | 0]),
+      timer: 2 + m * 3,
+      phase: rand() * 6.28,
+    });
+  }
+  function updateMoths(dt, t) {
+    for (const mo of moths) {
+      mo.timer -= dt;
+      if (mo.timer <= 0) {                      /* pick the next perch to orbit */
+        mo.anchor.fromArray(tips[(rand() * tips.length) | 0]);
+        mo.timer = 4 + rand() * 5;
+      }
+      tmpA.copy(mo.anchor);
+      tmpA.x += Math.sin(t * 0.9 + mo.phase) * 0.35;
+      tmpA.y += Math.cos(t * 0.7 + mo.phase * 2.0) * 0.25 + 0.15;
+      tmpA.z += Math.sin(t * 0.6 + mo.phase * 3.0) * 0.3;
+      if (shared.uPointerStrength.value > 0.55) tmpA.lerp(shared.uPointer.value, 0.4);
+      tmpB.subVectors(tmpA, mo.pos).multiplyScalar(1.4);
+      mo.vel.addScaledVector(tmpB, dt).clampLength(0, 0.6);
+      mo.pos.addScaledVector(mo.vel, dt);
+      mo.mesh.position.copy(mo.pos);
+      if (mo.vel.lengthSq() > 1e-6)
+        mo.mesh.quaternion.setFromUnitVectors(tmpA.set(0, 0, 1), tmpB.copy(mo.vel).normalize());
+    }
+  }
+  const mothMeshes = moths.map((m) => m.mesh);
+
   /* one transform for the whole organism */
   const organism = new THREE.Group();
-  organism.add(points, linkLines, nodes);
+  organism.add(wood, points, linkLines, nodes, ...mothMeshes);
+  wood.renderOrder = 0; points.renderOrder = 1; linkLines.renderOrder = 2; nodes.renderOrder = 3;
+  mothMeshes.forEach((m) => { m.renderOrder = 4; });
   organism.rotation.set(0.06, -0.25, 0.0);
   organism.scale.setScalar(0.7);
   scene.add(organism);
@@ -680,14 +862,20 @@ function start() {
   let targetStrength = 0;
   addEventListener("pointermove", (e) => {
     ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+    targetStrength = 1;
+  });
+  addEventListener("pointerleave", () => { targetStrength = 0; });
+  /* resolved every frame with the CURRENT camera — resolving only on
+     pointermove leaves the repel bubble trailing while the parallax
+     camera keeps drifting */
+  function resolvePointer() {
+    if (ndc.x === 9) return;
     ray.setFromCamera(ndc, camera);
     if (ray.ray.intersectPlane(plane, hit)) {
       organism.updateMatrixWorld();
-      target.copy(organism.worldToLocal(hit.clone()));
-      targetStrength = 1;
+      target.copy(organism.worldToLocal(hit));
     }
-  });
-  addEventListener("pointerleave", () => { targetStrength = 0; });
+  }
 
   /* telemetry — the numbers in the footer are the scene's real numbers */
   const telemetry = document.getElementById("telemetry");
@@ -707,36 +895,42 @@ function start() {
       shared.uForm.value = 1 - Math.pow(1 - formT, 3);
     }
 
-    shared.uPointer.value.lerp(target, 1 - Math.pow(0.001, dt));
-    shared.uPointerStrength.value += (targetStrength * 0.9 + 0.1 - shared.uPointerStrength.value) * (1 - Math.pow(0.002, dt));
-
-    camera.position.x += (ndc.x === 9 ? 0 : ndc.x * 0.16 - camera.position.x) * 0.03;
-    camera.position.y += (ndc.y === 9 ? 0 : ndc.y * 0.1 - camera.position.y) * 0.03;
+    camera.position.x += (ndc.x === 9 ? 0 : ndc.x * 0.1 - camera.position.x) * 0.03;
+    camera.position.y += (ndc.y === 9 ? 0 : ndc.y * 0.06 - camera.position.y) * 0.03;
     camera.lookAt(0.55, 0, 0);
 
+    resolvePointer();
+    shared.uPointer.value.lerp(target, 1 - Math.pow(0.0002, dt));
+    shared.uPointerStrength.value += (targetStrength * 0.9 + 0.1 - shared.uPointerStrength.value) * (1 - Math.pow(0.002, dt));
+
+    updateMoths(dt, clock.elapsedTime);
     renderer.render(scene, camera);
 
     if (dt > 0) fps += (1 / dt - fps) * 0.06;
     if (clock.elapsedTime - lastTelemetry > 0.5) {
       lastTelemetry = clock.elapsedTime;
-      telemetry.textContent = `${COUNT.toLocaleString("en-US")} points · ${links} synapses · ${Math.round(fps)} fps`;
+      telemetry.textContent = `${COUNT.toLocaleString("en-US")} points · ${links} synapses · ${MOTHS} moths · ${Math.round(fps)} fps`;
     }
   }
 
   document.body.classList.add("gl-ready");
+  window.__atlas = { shared, organism, moths, warp() { formT = 1; shared.uForm.value = 1; }, get formT() { return formT; }, get fps() { return fps; } };
+  addEventListener("error", (e) => { (window.__atlasErrors ??= []).push(String(e.message)); });
 
   if (reducedMotion) {
     shared.uForm.value = 1;
     shared.uTime.value = 40;
     renderer.render(scene, camera);
-    telemetry.textContent = `${COUNT.toLocaleString("en-US")} points · ${links} synapses · still`;
+    telemetry.textContent = `${COUNT.toLocaleString("en-US")} points · ${links} synapses · ${MOTHS} moths · still`;
     return;
   }
 
   frame();
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { cancelAnimationFrame(raf); clock.stop(); }
-    else { clock.start(); frame(); }
+    cancelAnimationFrame(raf);
+    /* the dt clamp in frame() swallows the gap; restarting the clock
+       would rewind uTime and make the whole field jump */
+    if (!document.hidden) frame();
   });
 }
 
