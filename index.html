@@ -289,6 +289,18 @@
     will-change: opacity, transform;
   }
 
+  /* Stamped by script ~2.6s after load, when every entrance delay+duration
+     has run out. From then on the animations are simply gone, so nothing —
+     password-manager DOM churn around the sign-in form included — can replay
+     them from their opacity-0 start and blink the card out. */
+  html.entrance-done .rise,
+  html.entrance-done .word {
+    animation: none;
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .rise { animation: none; }
     #field { transition: none; }
@@ -298,13 +310,16 @@
 
   /* ---------- narrow ---------- */
   @media (max-width: 720px) {
-    body.gl-ready #field { opacity: 0.6; }
+    /* the night scene IS the page — dimming it to 0.6 killed the glow */
+    body.gl-ready #field { opacity: 0.92; }
     .nav-links { gap: 20px; }
-    .hero { align-items: flex-start; padding-top: 9vh; }
+    .hero { align-items: flex-start; padding-top: 8vh; }
     .gate { max-width: none; }
-    .foot { font-size: 10px; }
-    .foot .services { gap: 12px; }
-    .foot .seed { display: none; }
+    .foot { font-size: 10px; justify-content: center; }
+    .foot .services { gap: 14px; }
+    /* the full telemetry line cannot fit a phone; the services row carries
+       the footer alone */
+    .foot .telemetry { display: none; }
   }
 </style>
 </head>
@@ -403,6 +418,14 @@ function splitWords(el) {
 }
 
 for (const el of document.querySelectorAll("[data-words]")) splitWords(el);
+
+/* Entrance animations replay from their opacity-0 start whenever the DOM
+   around them is churned — and password managers churn the DOM around a
+   sign-in form the moment its input takes focus, which blinked the whole
+   card out and back. A timer beats event listening here: animationend can be
+   missed entirely under tab throttling, while this fires regardless and the
+   stylesheet does the rest. */
+setTimeout(() => document.documentElement.classList.add("entrance-done"), 2600);
 
 /* ------------------------------------------------------------------ *
  *  The synapse tree.
