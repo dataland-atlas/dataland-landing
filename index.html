@@ -240,6 +240,14 @@
     font-size: 12px;
     color: var(--mist);
   }
+  /* after a submit while the app is in private rollout */
+  .gate.sent input[type="email"] { opacity: 0.5; }
+  .gate.sent button {
+    background: transparent;
+    color: var(--bone);
+    border: 1px solid var(--hairline);
+    cursor: default;
+  }
 
   /* ---------- footer ---------- */
   .foot {
@@ -368,8 +376,13 @@
 <script type="module">
 import * as THREE from "./assets/three.module.min.js";
 
-/* Where "Continue" goes until IAM wiring lands. */
+/* The Atlas app: the spark gateway behind Cloudflare Access at this
+   hostname. "Signing in" means arriving at that door — Access runs the
+   actual identity step (Google/OTP) and the services verify its JWT, per
+   the platform spec. If the app is ever down, flip APP_LIVE off and the
+   card confirms in place instead of navigating into an error page. */
 const APP_URL = "https://atlas.dataland.team";
+const APP_LIVE = true;
 
 const form = document.getElementById("gate");
 const email = document.getElementById("email");
@@ -377,6 +390,17 @@ form.addEventListener("submit", (e) => {
   e.preventDefault();
   const v = email.value.trim();
   if (!email.checkValidity() || !v) { email.reportValidity?.(); email.focus(); return; }
+  if (!APP_LIVE) {
+    form.classList.add("sent");
+    form.querySelector(".gate-label").textContent = "Request received";
+    form.querySelector(".gate-meta").textContent =
+      `Atlas is in private rollout — your workspace admin will send an invite to ${v}.`;
+    email.disabled = true;
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    btn.innerHTML = "Request sent \u2713";
+    return;
+  }
   window.location.href = `${APP_URL}/?email=${encodeURIComponent(v)}`;
 });
 document.getElementById("nav-signin").addEventListener("click", (e) => {
